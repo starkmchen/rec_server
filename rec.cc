@@ -469,11 +469,12 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
     auto now_time = time(NULL);
     auto time_delta = 3 * 24 * 3600;
     std::vector<modelx::Model_result> new_ad;
-    for (const auto &ad: fs) {
+    for (uint32_t i = 0; i < fs.size(); ++i) {
+      const auto &ad = fs[i];
       auto time_diff = now_time - ad.ad_data().ad_info().creative_create_time();
       auto cid_imp = ad.ad_data().ad_counter().c_id().count_features_7d().imp();
       if (time_diff < time_delta && cid_imp < 10000) {
-        new_ad.emplace_back(ad);
+        new_ad.emplace_back(ads[i]);
       }
     }
     if (new_ad.size() > 0) {
