@@ -346,6 +346,26 @@ bool GetCvr(
   return true;
 }
 
+bool NewAdSup(
+    const std::vector<Feature>& fs,
+    const std::vector<modelx::Model_result>& ads,
+    std::vector<modelx::Model_result> &new_ad) {
+  auto now_time = time(NULL);
+  auto time_delta = 3 * 24 * 3600;
+  for (uint32_t i = 0; i < fs.size(); ++i) {
+    const auto &ad = fs[i];
+    auto time_diff = now_time - ad.ad_data().ad_info().creative_create_time();
+    auto cid_imp = ad.ad_data().ad_counter().c_id().count_features_7d().imp();
+    if (time_diff < time_delta && cid_imp < 10000) {
+      new_ad.emplace_back(ads[i]);
+    }
+  }
+  if (new_ad.size() > 0) {
+    std::random_shuffle(new_ad.begin(), new_ad.end());
+  }
+  return true;
+}
+
 
 std::vector<FeatureResultPtr> FeatureExtract(const std::vector<Feature> &fs) {
   common::Timer timer(featureExtractMs);
@@ -466,20 +486,8 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
 
   auto size = std::min(ad_count, ads.size());
   if (is_new_ad_sup) {
-    auto now_time = time(NULL);
-    auto time_delta = 3 * 24 * 3600;
     std::vector<modelx::Model_result> new_ad;
-    for (uint32_t i = 0; i < fs.size(); ++i) {
-      const auto &ad = fs[i];
-      auto time_diff = now_time - ad.ad_data().ad_info().creative_create_time();
-      auto cid_imp = ad.ad_data().ad_counter().c_id().count_features_7d().imp();
-      if (time_diff < time_delta && cid_imp < 10000) {
-        new_ad.emplace_back(ads[i]);
-      }
-    }
-    if (new_ad.size() > 0) {
-      std::random_shuffle(new_ad.begin(), new_ad.end());
-    }
+    NewAdSup(fs, ads, new_ad);
     if (new_ad.size() > size) {
       new_ad.resize(size);
     }
