@@ -479,8 +479,11 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
     if (new_ad.size() > 0) {
       std::random_shuffle(new_ad.begin(), new_ad.end());
     }
+    if (new_ad.size() > size) {
+      new_ad.resize(size);
+    }
     for (uint32_t i = 0; i < new_ad.size(); ++i) {
-      ads[i].swap(new_ad[i]);
+      ads[i].CopyFrom(new_ad[i]);
     }
   } else {
     std::partial_sort(ads.begin(), ads.begin() + size, ads.end(), cmp);
