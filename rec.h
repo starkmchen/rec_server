@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+
 #include "ad_model_service.pb.h"
 #include "store_table.pb.h"
 
@@ -11,9 +13,8 @@ class AdRec {
   bool Recommend(std::vector<modelx::Model_result>& ads);
 
  private:
-  bool GetModelCtr(
-      const std::vector<Feature> &fs,
-      std::vector<double> &ctr_vec);
+  std::optional<std::vector<double>> GetModelCtr(const std::vector<Feature>&);
+  std::optional<std::vector<double>> GetCtr(const std::vector<Feature>& fs);
 
   const ad_model::AdRequest* request_;
 

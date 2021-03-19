@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <chrono>
+#include <tuple>
 
 #include "rec/beta_distribution.h"
 #include "ads_feature.h"
@@ -16,10 +17,10 @@
 
 namespace ad {
 
-bool GetCvr(
-    const std::vector<Feature> &features, std::vector<double> &cvr_vec);
-bool GetStatsCtr(
-    const std::vector<Feature> &features, std::vector<double> &ctr_vec);
+inline void swap(modelx::Model_result& lhs, modelx::Model_result& rhs) {
+  lhs.Swap(&rhs);
+}
+
 
 void AdRec::InitShareStoreData() {
   const auto& user_id = request_->request().user_id();
@@ -191,6 +192,7 @@ double GetExploreScore(
   return explore_score;
 }
 
+
 bool FillScore(
     const std::vector<Feature>& fs,
     const std::vector<double> &ctr_vec,
@@ -283,9 +285,11 @@ bool FillScore(
   return true;
 }
 
-bool GetStatsCtr(
-    const std::vector<Feature> &features,
-    std::vector<double> &ctr_vec) {
+
+std::optional<std::vector<double>>
+GetStatsCtr(const std::vector<Feature> &features) {
+  std::vector<double> ctr_vec;
+  ctr_vec.reserve(features.size());
   for (uint32_t i = 0; i < features.size(); ++i) {
     const auto &feature = features[i];
     double ctr = 0.05;
@@ -311,13 +315,14 @@ bool GetStatsCtr(
     }
     ctr_vec.push_back(ctr);
   }
-  return true;
+  return std::make_optional(std::move(ctr_vec));
 }
 
-bool GetCvr(
-    const std::vector<Feature> &features,
-    std::vector<double> &cvr_vec) {
+
+std::vector<double> GetCvr(const std::vector<Feature> &features) {
   common::Timer timer(cvrMs);
+  std::vector<double> cvr_vec;
+  cvr_vec.reserve(features.size());
   for (uint32_t i = 0; i < features.size(); ++i) {
     const auto &feature = features[i];
     double cvr = 0.003;
@@ -343,27 +348,57 @@ bool GetCvr(
     }
     cvr_vec.push_back(cvr);
   }
-  return true;
+  return cvr_vec;
 }
 
-bool NewAdSup(
+
+/*
+  优先返回新广告
+  1 将新广告放到ads前面
+  2 shuffle新广告
+  3 截断ads为size_limit
+*/
+void NewAdBoost(
     const std::vector<Feature>& fs,
-    const std::vector<modelx::Model_result>& ads,
-    std::vector<modelx::Model_result> &new_ad) {
+    std::vector<modelx::Model_result> ads,
+    size_t size_limit,
+    std::map<std::string, metis::RecAdInfo> &rec_ad_map) {
+  std::vector<const modelx::Model_result*> new_ad, old_ad;
   auto now_time = time(NULL);
   auto time_delta = 3 * 24 * 3600;
-  for (uint32_t i = 0; i < fs.size(); ++i) {
+  for (size_t i = 0; i < fs.size() && i < ads.size(); ++i) {
     const auto &ad = fs[i];
     auto time_diff = now_time - ad.ad_data().ad_info().creative_create_time();
     auto cid_imp = ad.ad_data().ad_counter().c_id().count_features_7d().imp();
-    if (time_diff < time_delta && cid_imp < 10000) {
-      new_ad.emplace_back(ads[i]);
+    if (time_diff < time_delta && cid_imp < 10000) {  // 新广告
+      const auto &cid = ad.ad_data().ad_info().creative_id();
+      auto it = rec_ad_map.find(cid);
+      if (it != rec_ad_map.end()) {
+        it->second.set_new_ad_flow(true);
+      }
+      new_ad.push_back(&ads[i]);  // 不能提前终止，因为要shuffle
+    } else {
+      old_ad.push_back(&ads[i]);
     }
   }
-  if (new_ad.size() > 0) {
-    std::random_shuffle(new_ad.begin(), new_ad.end());
+  if (new_ad.empty()) {
+    return;
   }
-  return true;
+  std::random_shuffle(new_ad.begin(), new_ad.end());
+  std::vector<modelx::Model_result> ad_result;
+  for (auto p : new_ad) {
+    ad_result.emplace_back(*p);
+    if (ad_result.size() >= size_limit) {
+      break;
+    }
+  }
+  for (auto p : old_ad) {
+    if (ad_result.size() >= size_limit) {
+      break;
+    }
+    ad_result.emplace_back(*p);
+  }
+  ads.swap(ad_result);
 }
 
 
@@ -379,59 +414,108 @@ std::vector<FeatureResultPtr> FeatureExtract(const std::vector<Feature> &fs) {
 }
 
 
-bool AdRec::GetModelCtr(
-    const std::vector<Feature> &fs,
-    std::vector<double> &ctr_vec) {
-  std::vector<FeatureResultPtr> features = FeatureExtract(fs);
+std::optional<std::vector<double>>
+AdRec::GetModelCtr(const std::vector<Feature> &fs) {
   // TODO: get tf model name, output
   std::string model_name = "dnn_model_t1", tf_output = "predictions";
   auto model = GetTfModel(model_name);
   if (model == nullptr) {
     common::Stats::get()->Incr(tfModelNameError);
     LOG_ERROR("invalid tf model_name: " << model_name);
-    return false;
+    return std::nullopt;
   }
   // tf request
   tensorflow::serving::PredictRequest request;
   request.mutable_model_spec()->set_name(model_name);
-  if (!FillTfFeatures(model->dnn_dict, features, *request.mutable_inputs())) {
-    return false;
+  if (!FillTfFeatures(model->dnn_dict, FeatureExtract(fs),
+      *request.mutable_inputs())) {
+    return std::nullopt;
   }
   // call tf-serving
   tensorflow::serving::PredictResponse response;
   if (!GetTfClient().Predict(request, response)) {
-    return false;
+    return std::nullopt;
   }
   const auto& it_resp = response.outputs().find(tf_output);
   if (it_resp == response.outputs().end()) {
     common::Stats::get()->Incr(tfModelOutputError);
     LOG_ERROR("tf output not found: model=" << model_name
       << " output=" << tf_output);
-    return false;
+    return std::nullopt;
   }
 
   const auto &tensor_proto = it_resp->second;
   if (tensor_proto.dtype() != tensorflow::DataType::DT_FLOAT) {
     common::Stats::get()->Incr(tfDataTypeError);
     LOG_ERROR("tf response data_type is not float: " << tensor_proto.dtype());
-    return false;
+    return std::nullopt;
   }
   if (tensor_proto.float_val_size() != fs.size()) {
     common::Stats::get()->Incr(tfTensorSizeError);
     LOG_ERROR("tf response size invalid: " << tensor_proto.float_val_size() <<
       " " << fs.size());
-    return false;
+    return std::nullopt;
   }
 
   // set score
+  std::vector<double> ctr_vec;
   ctr_vec.reserve(fs.size());
   for (int i = 0; i < tensor_proto.float_val_size(); ++i) {
     ctr_vec.push_back(tensor_proto.float_val(i));
   }
-  return true;
+  return std::make_optional(std::move(ctr_vec));
 }
 
 /* ========================================================================== */
+
+std::optional<std::vector<double>> AdRec::GetCtr(
+    const std::vector<Feature>& fs) {
+  auto model_exp_config_ite =
+      request_->exp_params().exp_params().find("stats_ctr");
+  if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
+      model_exp_config_ite->second == 1) {
+    return GetStatsCtr(fs);
+  }
+  return GetModelCtr(fs);
+}
+
+/* ========================================================================== */
+
+std::tuple<bool, bool> GetEEConfig() {
+  bool is_explore_flow(false), is_new_ad_sup(false);
+  std::uniform_int_distribution<int> udist(1, 100);
+  std::default_random_engine random_gen(
+      std::chrono::system_clock::now().time_since_epoch().count());
+  auto rand_num = udist(random_gen);
+  if (rand_num < 5) {
+    is_explore_flow = true;
+  } else if (rand_num < 10) {
+    is_new_ad_sup = true;
+  }
+  return std::make_tuple(is_explore_flow, is_new_ad_sup);
+}
+
+
+void SendMetisLog(
+    const std::vector<modelx::Model_result>& ads,
+    const metis::ReqAds& req_ads,
+    std::map<std::string, metis::RecAdInfo>& rec_ad_map) {
+  // prepare rec ads for metis log
+  metis::RecAds rec_ads;
+  auto rec_ads_list = rec_ads.mutable_rec_ads();
+  for (const auto& ad : ads) {
+    const auto& cid = ad.creative_id();
+    auto it = rec_ad_map.find(cid);
+    if (it == rec_ad_map.end()) {
+      continue;
+    }
+    rec_ads_list->Add()->Swap(&it->second);
+  }
+  // send kafka
+  SendRecAds(rec_ads);
+  SendReqAds(req_ads);
+}
+
 
 inline bool cmp (const modelx::Model_result& a, const modelx::Model_result& b) {
   return a.ecpm() > b.ecpm();
@@ -449,69 +533,31 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
     return false;
   }
 
-  std::vector<double> ctr_vec;
-  auto model_exp_config_ite =
-      request_->exp_params().exp_params().find("stats_ctr");
-  if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
-      model_exp_config_ite->second == 1) {
-    GetStatsCtr(fs, ctr_vec);
-  } else {
-    GetModelCtr(fs, ctr_vec);
-  }
-
-  std::vector<double> cvr_vec;
-  GetCvr(fs, cvr_vec);
-
-  const auto& ad_request = request_->request();
-  metis::ReqAds req_ads;  // metis logging for all ads in request
-  std::map<std::string, metis::RecAdInfo> rec_ad_map;
-  bool is_explore_flow(false), is_new_ad_sup(false);
-  std::uniform_int_distribution<int> udist(1, 100);
-  std::default_random_engine random_gen(
-      std::chrono::system_clock::now().time_since_epoch().count());
-  auto rand_num = udist(random_gen);
-  if (rand_num < 5) {
-    is_explore_flow = true;
-  } else if (rand_num < 10) {
-    is_new_ad_sup = true;
-  }
-  if (!FillScore(fs, ctr_vec, cvr_vec, ads, ad_request, is_explore_flow,
-      req_ads, rec_ad_map)) {
+  auto cvr_vec = GetCvr(fs);
+  auto ctr_vec = GetCtr(fs);
+  if (!ctr_vec.has_value()) {
     return false;
   }
-  decltype(ads.size()) ad_count = ad_request.contexts().ad_count();
-  if (ad_count == 0) {
-    return true;
+
+  bool is_explore_flow(false), is_new_ad_sup(false);
+  std::tie (is_explore_flow, is_new_ad_sup) = GetEEConfig();
+
+  metis::ReqAds req_ads;  // metis logging for all ads in request
+  std::map<std::string, metis::RecAdInfo> rec_ad_map;
+  if (!FillScore(fs, ctr_vec.value(), cvr_vec, ads, request_->request(),
+      is_explore_flow, req_ads, rec_ad_map)) {
+    return false;
   }
 
-  auto size = std::min(ad_count, ads.size());
+  auto size = std::min(ads.size(),
+    static_cast<size_t>(request_->request().contexts().ad_count()));
+  std::partial_sort(ads.begin(), ads.begin() + size, ads.end(), cmp);
   if (is_new_ad_sup) {
-    std::vector<modelx::Model_result> new_ad;
-    NewAdSup(fs, ads, new_ad);
-    if (new_ad.size() > size) {
-      new_ad.resize(size);
-    }
-    for (uint32_t i = 0; i < new_ad.size(); ++i) {
-      ads[i].CopyFrom(new_ad[i]);
-    }
-  } else {
-    std::partial_sort(ads.begin(), ads.begin() + size, ads.end(), cmp);
+    NewAdBoost(fs, ads, size, rec_ad_map);
   }
   ads.resize(size);
-  // prepare rec ads
-  metis::RecAds rec_ads;
-  auto rec_ads_list = rec_ads.mutable_rec_ads();
-  for (const auto& ad : ads) {
-    const auto& cid = ad.creative_id();
-    auto it = rec_ad_map.find(cid);
-    if (it == rec_ad_map.end()) {
-      continue;
-    }
-    rec_ads_list->Add()->Swap(&it->second);
-  }
-  // send kafka
-  SendRecAds(rec_ads);
-  SendReqAds(req_ads);
+
+  SendMetisLog(ads, req_ads, rec_ad_map);
   return true;
 }
 
