@@ -178,7 +178,7 @@ bool FillTfFeatures(const std::map<std::string, DnnFieldItem>& model_dict,
 
 void DelExcessCapAd(std::vector<Feature> &fs) {
   std::vector<Feature> new_fs;
-  for (const auto feature& : fs) {
+  for (const auto &feature : fs) {
     auto day_ainst = feature.ad_data().ad_counter().
         ad_id().count_features_bj_1d().attr_install();
     auto cap = feature.ad_data().ad_info().day_attr_install_cap();
