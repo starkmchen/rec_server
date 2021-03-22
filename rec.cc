@@ -182,7 +182,7 @@ void DelExcessCapAd(std::vector<Feature> &fs) {
     auto day_ainst = feature.ad_data().ad_counter().
         ad_id().count_features_bj_1d().attr_install();
     auto cap = feature.ad_data().ad_info().day_attr_install_cap();
-    if (cap > 0 && day_ainsts > cap) {
+    if (cap > 0 && day_ainst > cap) {
       continue;
     }
     new_fs.push_back(feature);
@@ -555,7 +555,7 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
     return false;
   }
 
-  DelExcessBudgetAd(fs);
+  DelExcessCapAd(fs);
 
   auto cvr_vec = GetCvr(fs);
   auto ctr_vec = GetCtr(fs);
