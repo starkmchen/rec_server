@@ -61,7 +61,7 @@ bool DataToFeatureInput(
     auto adinfo_key = "ad_id#" + std::to_string(ad_info.ad_id());
     auto adinfo_ite = store_ad_info.ad_infos().find(adinfo_key);
     if (adinfo_ite != store_ad_info.ad_infos().end()) {
-      ad_info.set_day_attr_install_cap(ite_info->second.day_attr_install_cap());
+      ad_info.set_day_attr_install_cap(adinfo_ite->second.day_attr_install_cap());
     }
     ad_info.set_attr_platform(model_request.creatives(i).attr_platform());
     ad_info.set_is_auto_download(model_request.creatives(i).is_auto_download());
