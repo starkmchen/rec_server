@@ -176,9 +176,31 @@ bool FillTfFeatures(const std::map<std::string, DnnFieldItem>& model_dict,
 
 /* ========================================================================== */
 
+void DelExcessCapAd(std::vector<Feature> &fs) {
+  std::vector<Feature> new_fs;
+  for (const auto feature& : fs) {
+    auto day_ainst = feature.ad_data().ad_counter().
+        ad_id().count_features_bj_1d().attr_install();
+    auto cap = feature.ad_data().ad_info().day_attr_install_cap();
+    if (cap > 0 && day_ainsts > cap) {
+      continue;
+    }
+    new_fs.push_back(feature);
+  }
+  fs.swap(fs);
+}
+
 double GetExploreScore(
     double ctr, double cvr, const Feature &feature,
-    std::default_random_engine &random_gen) {
+    std::default_random_engine &random_gen, bool is_random = false) {
+  if (is_random) {
+    std::uniform_int_distribution<int> udist(1, 1000);
+    auto rand_num = udist(random_gen);
+    double up_num(0.005), low_num(0.0002);
+    double score = (up_num - low_num) * rand_num / 1000.0 + low_num;
+    return score;
+  }
+
   double score = ctr * cvr;
   if (score > 0.999) {
     score = 0.01;
@@ -231,7 +253,7 @@ bool FillScore(
     double score = ctr_vec[i] * cvr_vec[i];
     if (is_explore_flow) {
       score = GetExploreScore(
-          ctr_vec[i], cvr_vec[i], fs[i], random_gen);
+          ctr_vec[i], cvr_vec[i], fs[i], random_gen, true);
     }
     double ecpm = std::max(floor_price,
                            score * 1000.0 * creatives_list[i].bid_price());
@@ -487,9 +509,9 @@ std::tuple<bool, bool> GetEEConfig() {
   std::default_random_engine random_gen(
       std::chrono::system_clock::now().time_since_epoch().count());
   auto rand_num = udist(random_gen);
-  if (rand_num < 5) {
+  if (rand_num <= 15) {
     is_explore_flow = true;
-  } else if (rand_num < 10) {
+  } else if (rand_num <= 20) {
     is_new_ad_sup = true;
   }
   return std::make_tuple(is_explore_flow, is_new_ad_sup);
@@ -532,6 +554,8 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
     LOG_ERROR("convert raw data to feature_input failed");
     return false;
   }
+
+  DelExcessBudgetAd(fs);
 
   auto cvr_vec = GetCvr(fs);
   auto ctr_vec = GetCtr(fs);
