@@ -13,6 +13,16 @@ class AdRec {
   bool Recommend(std::vector<modelx::Model_result>& ads);
 
  private:
+  bool FillScore(
+    const std::vector<Feature>& fs,
+    const std::vector<double> &ctr_vec,
+    const std::vector<double> &cvr_vec,
+    std::vector<modelx::Model_result>& ads,
+    const modelx::PredictionRequest& ad_request,
+    bool is_explore_flow,
+    metis::ReqAds& req_ads,
+    std::map<std::string, metis::RecAdInfo>& rec_ads);
+
   std::optional<std::vector<double>> GetModelCtr(const std::vector<Feature>&);
   std::optional<std::vector<double>> GetCtr(const std::vector<Feature>& fs);
 

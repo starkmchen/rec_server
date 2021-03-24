@@ -65,6 +65,7 @@ bool DataToFeatureInput(
     }
     ad_info.set_attr_platform(model_request.creatives(i).attr_platform());
     ad_info.set_is_auto_download(model_request.creatives(i).is_auto_download());
+    ad_info.set_bid_price((model_request.creatives(i).bid_price());
 
     UserAdFeature user_ad_feature;
     std::string key = "user_id#ad_id#" +
