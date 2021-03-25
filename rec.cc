@@ -582,6 +582,10 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
   DelExcessCapAd(fs);
 
   auto cvr_vec = GetCvr(fs);
+  if (!cvr_vec.has_value()) {
+    return false
+  }
+
   auto ctr_vec = GetCtr(fs);
   if (!ctr_vec.has_value()) {
     return false;
