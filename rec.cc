@@ -382,7 +382,7 @@ GetStatsCvr(const std::vector<Feature> &features) {
     }
     cvr_vec.push_back(cvr);
   }
-  return cvr_vec;
+  return std::make_optional(std::move(cvr_vec));
 }
 
 
@@ -592,7 +592,7 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
 
   metis::ReqAds req_ads;  // metis logging for all ads in request
   std::map<std::string, metis::RecAdInfo> rec_ad_map;
-  if (!FillScore(fs, ctr_vec.value(), cvr_vec, ads, request_->request(),
+  if (!FillScore(fs, ctr_vec.value(), cvr_vec.value(), ads, request_->request(),
       is_explore_flow, req_ads, rec_ad_map)) {
     return false;
   }
