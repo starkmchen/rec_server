@@ -359,7 +359,7 @@ std::vector<double> GetCvr(const std::vector<Feature> &features) {
   cvr_vec.reserve(features.size());
   for (uint32_t i = 0; i < features.size(); ++i) {
     const auto &feature = features[i];
-    double cvr = 0.003;
+    double cvr = 0.03;
     double attr_install(0.0);
     double cid_click =feature.ad_data().ad_counter().
         c_id().count_features_7d().click();
@@ -368,16 +368,16 @@ std::vector<double> GetCvr(const std::vector<Feature> &features) {
     double cate_click = feature.ad_data().ad_counter().
         ad_package_category().count_features_7d().click();
     if (cid_click > 300) {
-      attr_install = feature.ad_data().ad_counter().
-          c_id().count_features_7d().attr_install();
+      attr_install = std::max(feature.ad_data().ad_counter().
+          c_id().count_features_7d().attr_install(), 1);
       cvr = attr_install / cid_click;
     } else if (pkg_click > 300) {
-      attr_install = feature.ad_data().ad_counter().
-          ad_package_name().count_features_7d().attr_install();
+      attr_install = std::max(feature.ad_data().ad_counter().
+          ad_package_name().count_features_7d().attr_install(), 1);
       cvr = attr_install / pkg_click;
     } else if (cate_click > 300) {
-      attr_install = feature.ad_data().ad_counter().
-          ad_package_category().count_features_7d().attr_install();
+      attr_install = std::max(feature.ad_data().ad_counter().
+          ad_package_category().count_features_7d().attr_install(), 1);
       cvr = attr_install / cate_click;
     }
     cvr_vec.push_back(cvr);
