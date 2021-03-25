@@ -23,8 +23,12 @@ class AdRec {
     metis::ReqAds& req_ads,
     std::map<std::string, metis::RecAdInfo>& rec_ads);
 
-  std::optional<std::vector<double>> GetModelCtr(const std::vector<Feature>&);
+  std::optional<std::vector<double>> GetModelScore(
+      const std::string &model_name,
+      const std::string &tf_output,
+      const std::vector<Feature>&);
   std::optional<std::vector<double>> GetCtr(const std::vector<Feature>& fs);
+  std::optional<std::vector<double>> GetCvr(const std::vector<Feature>& fs);
 
   const ad_model::AdRequest* request_;
 

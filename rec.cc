@@ -352,8 +352,8 @@ GetStatsCtr(const std::vector<Feature> &features) {
   return std::make_optional(std::move(ctr_vec));
 }
 
-
-std::vector<double> GetCvr(const std::vector<Feature> &features) {
+std::optional<std::vector<double>>
+GetStatsCvr(const std::vector<Feature> &features) {
   common::Timer timer(cvrMs);
   std::vector<double> cvr_vec;
   cvr_vec.reserve(features.size());
@@ -449,9 +449,10 @@ std::vector<FeatureResultPtr> FeatureExtract(const std::vector<Feature> &fs) {
 
 
 std::optional<std::vector<double>>
-AdRec::GetModelCtr(const std::vector<Feature> &fs) {
-  // TODO: get tf model name, output
-  std::string model_name = "dnn_model_t1", tf_output = "predictions";
+AdRec::GetModelScore(
+    const std::string &model_name,
+    const std::string &tf_output,
+    const std::vector<Feature> &fs) {
   auto model = GetTfModel(model_name);
   if (model == nullptr) {
     common::Stats::get()->Incr(tfModelNameError);
@@ -492,12 +493,12 @@ AdRec::GetModelCtr(const std::vector<Feature> &fs) {
   }
 
   // set score
-  std::vector<double> ctr_vec;
-  ctr_vec.reserve(fs.size());
+  std::vector<double> score_vec;
+  score_vec.reserve(fs.size());
   for (int i = 0; i < tensor_proto.float_val_size(); ++i) {
-    ctr_vec.push_back(tensor_proto.float_val(i));
+    score_vec.push_back(tensor_proto.float_val(i));
   }
-  return std::make_optional(std::move(ctr_vec));
+  return std::make_optional(std::move(score_vec));
 }
 
 /* ========================================================================== */
@@ -510,7 +511,18 @@ std::optional<std::vector<double>> AdRec::GetCtr(
       model_exp_config_ite->second == 1) {
     return GetStatsCtr(fs);
   }
-  return GetModelCtr(fs);
+  return GetModelScore("dnn_model_t1", "predictions", fs);
+}
+
+std::optional<std::vector<double>> AdRec::GetCvr(
+    const std::vector<Feature>& fs) {
+  auto model_exp_config_ite =
+      request_->exp_params().exp_params().find("model_cvr");
+  if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
+      model_exp_config_ite->second == 0) {
+    return GetStatsCvr(fs);
+  }
+  return GetModelScore("dnn_model_cvr_t1", "predictions", fs);
 }
 
 /* ========================================================================== */
