@@ -241,12 +241,6 @@ bool AdRec::FillScore(
   double floor_price = ad_request.contexts().floor_price();
   std::default_random_engine random_gen(
       std::chrono::system_clock::now().time_since_epoch().count());
-  auto model_exp_config_ite =
-      request_->exp_params().exp_params().find("stats_ctr");
-  int32_t rank_exp(0);
-  if (model_exp_config_ite != request_->exp_params().exp_params().end()) {
-    rank_exp = model_exp_config_ite->second;
-  }
   for (int i = 0; i < ctr_vec.size(); ++i) {
     const auto& ad_info = fs[i].ad_data().ad_info();
     const auto& creatives = creatives_list[i];
@@ -257,13 +251,7 @@ bool AdRec::FillScore(
     }
     modelx::Model_result result;
     double score = ctr_vec[i] * cvr_vec[i];
-    /*
     if (is_explore_flow) {
-      score = GetExploreScore(
-          ctr_vec[i], cvr_vec[i], fs[i], random_gen, true);
-    }
-    */
-    if (rank_exp == 2) {
       score = GetExploreScore(
           ctr_vec[i], cvr_vec[i], fs[i], random_gen, true);
     }
@@ -533,9 +521,9 @@ std::tuple<bool, bool> GetEEConfig() {
   std::default_random_engine random_gen(
       std::chrono::system_clock::now().time_since_epoch().count());
   auto rand_num = udist(random_gen);
-  if (rand_num <= 15) {
+  if (rand_num <= 5) {
     is_explore_flow = true;
-  } else if (rand_num <= 20) {
+  } else if (rand_num <= 10) {
     is_new_ad_sup = true;
   }
   return std::make_tuple(is_explore_flow, is_new_ad_sup);
@@ -601,20 +589,9 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
     return false;
   }
 
-  auto model_exp_config_ite =
-      request_->exp_params().exp_params().find("stats_ctr");
-  int32_t rank_exp(0);
-  if (model_exp_config_ite != request_->exp_params().exp_params().end()) {
-    rank_exp = model_exp_config_ite->second;
-  }
-
   auto size = std::min(ads.size(),
     static_cast<size_t>(request_->request().contexts().ad_count()));
-  if (rank_exp == 3 && size > 0) {
-    std::random_shuffle(ads.begin(), ads.end());
-  } else {
-    std::partial_sort(ads.begin(), ads.begin() + size, ads.end(), cmp);
-  }
+  std::partial_sort(ads.begin(), ads.begin() + size, ads.end(), cmp);
 
   if (is_new_ad_sup) {
     NewAdBoost(fs, ads, size, rec_ad_map);
