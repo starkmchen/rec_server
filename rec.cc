@@ -349,24 +349,44 @@ GetStatsCvr(const std::vector<Feature> &features) {
     const auto &feature = features[i];
     double cvr = 0.03;
     double attr_install(0.0);
-    double cid_click =feature.ad_data().ad_counter().
-        c_id().count_features_7d().click();
-    double pkg_click = feature.ad_data().ad_counter().
-        ad_package_name().count_features_7d().click();
-    double cate_click = feature.ad_data().ad_counter().
-        ad_package_category().count_features_7d().click();
-    if (cid_click > 300) {
-      attr_install = std::max(feature.ad_data().ad_counter().
-          c_id().count_features_7d().attr_install(), 1);
-      cvr = attr_install / cid_click;
-    } else if (pkg_click > 300) {
-      attr_install = std::max(feature.ad_data().ad_counter().
-          ad_package_name().count_features_7d().attr_install(), 1);
-      cvr = attr_install / pkg_click;
-    } else if (cate_click > 300) {
-      attr_install = std::max(feature.ad_data().ad_counter().
-          ad_package_category().count_features_7d().attr_install(), 1);
-      cvr = attr_install / cate_click;
+    double click(0.0);
+    double clk_thres(300);
+    do {
+      click = feature.ad_data().ad_counter().c_id().count_features_1d().click();
+      if (click > clk_thres) {
+        attr_install = std::max(feature.ad_data().ad_counter().
+            c_id().count_features_1d().attr_install(), 1);
+        break;
+      }
+      click = feature.ad_data().ad_counter().c_id().count_features_3d().click();
+      if (click > clk_thres) {
+        attr_install = std::max(feature.ad_data().ad_counter().
+            c_id().count_features_3d().attr_install(), 1);
+        break;
+      }
+      click = feature.ad_data().ad_counter().c_id().count_features_7d().click();
+      if (click > clk_thres) {
+        attr_install = std::max(feature.ad_data().ad_counter().
+            c_id().count_features_7d().attr_install(), 1);
+        break;
+      }
+      click = feature.ad_data().ad_counter().ad_package_name().
+          count_features_7d().click();
+      if (click > clk_thres) {
+        attr_install = std::max(feature.ad_data().ad_counter().
+            ad_package_name().count_features_7d().attr_install(), 1);
+        break;
+      }
+      click = feature.ad_data().ad_counter().
+          ad_package_category().count_features_7d().click();
+      if (click > clk_thres) {
+        attr_install = std::max(feature.ad_data().ad_counter().
+            ad_package_category().count_features_7d().attr_install(), 1);
+        break;
+      }
+    } while(0);
+    if (click > clk_thres) {
+      cvr = attr_install / click;
     }
     cvr_vec.push_back(cvr);
   }
