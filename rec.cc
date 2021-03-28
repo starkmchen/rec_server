@@ -14,8 +14,11 @@
 #include "tf/tf.h"
 #include "tf/tf_model.h"
 #include "util/log.h"
+#include "util/ThreadPool.h"
 
 namespace ad {
+
+static ThreadPool thread_pool(50);
 
 inline void swap(modelx::Model_result& lhs, modelx::Model_result& rhs) {
   lhs.Swap(&rhs);
@@ -201,12 +204,21 @@ double GetExploreScore(
     return score;
   }
 
+  auto time_delta = 7 * 24 * 3600;
+  auto time_diff =
+      time(NULL) - feature.ad_data().ad_info().creative_create_time();
+  double cid_imp =
+      feature.ad_data().ad_counter().c_id().count_features_7d().imp();
   double score = ctr * cvr;
+  if ((time_diff > time_delta) || (cid_imp > 100000)) {
+    return score;
+  }
+
   if (score > 0.999) {
     score = 0.01;
   }
 
-  double imp(1000);
+  double imp(std::max(cid_imp, 1000));
   double alpha = score * imp;
   double beta = imp - alpha;
   BetaDistribution dist(alpha, beta);
@@ -253,7 +265,7 @@ bool AdRec::FillScore(
     double score = ctr_vec[i] * cvr_vec[i];
     if (is_explore_flow) {
       score = GetExploreScore(
-          ctr_vec[i], cvr_vec[i], fs[i], random_gen, true);
+          ctr_vec[i], cvr_vec[i], fs[i], random_gen);
     }
     double ecpm = std::max(floor_price,
                            score * 1000.0 * creatives_list[i].bid_price());
@@ -525,9 +537,9 @@ std::optional<std::vector<double>> AdRec::GetCtr(
 std::optional<std::vector<double>> AdRec::GetCvr(
     const std::vector<Feature>& fs) {
   auto model_exp_config_ite =
-      request_->exp_params().exp_params().find("model_cvr");
+      request_->exp_params().exp_params().find("stats_ctr");
   if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
-      model_exp_config_ite->second == 0) {
+      model_exp_config_ite->second == 1) {
     return GetStatsCvr(fs);
   }
   return GetModelScore("dnn_model_cvr_t1", "predictions", fs);
@@ -576,6 +588,22 @@ inline bool cmp (const modelx::Model_result& a, const modelx::Model_result& b) {
 }
 
 
+std::pair<AdRec::FutureCtr, AdRec::FutureCvr>
+AdRec::GetCtrCvr(const std::vector<Feature>& fs) {
+  auto ctr_fut = thread_pool.enqueue(
+    [this, &fs] () {
+      return GetCtr(fs);
+    }
+  );
+  auto cvr_fut = thread_pool.enqueue(
+    [this, &fs] () {
+      return GetCvr(fs);
+    }
+  );
+  return std::make_pair(std::move(ctr_fut), std::move(cvr_fut));
+}
+
+
 bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
   InitShareStoreData();
   // convert raw data to feature_input
@@ -589,13 +617,10 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
 
   DelExcessCapAd(fs);
 
-  auto cvr_vec = GetCvr(fs);
-  if (!cvr_vec.has_value()) {
-    return false;
-  }
-
-  auto ctr_vec = GetCtr(fs);
-  if (!ctr_vec.has_value()) {
+  auto ctr_cvr = GetCtrCvr(fs);
+  auto ctr_opt = ctr_cvr.first.get();
+  auto cvr_opt = ctr_cvr.second.get();
+  if (!ctr_opt.has_value() || !cvr_opt.has_value()) {
     return false;
   }
 
@@ -604,7 +629,7 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
 
   metis::ReqAds req_ads;  // metis logging for all ads in request
   std::map<std::string, metis::RecAdInfo> rec_ad_map;
-  if (!FillScore(fs, ctr_vec.value(), cvr_vec.value(), ads, request_->request(),
+  if (!FillScore(fs, ctr_opt.value(), cvr_opt.value(), ads, request_->request(),
       is_explore_flow, req_ads, rec_ad_map)) {
     return false;
   }

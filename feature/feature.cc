@@ -124,13 +124,15 @@ bool DataToFeatureInput(
       feature_ad_counter.mutable_ad_id()->CopyFrom(ite_ad->second);
     }
 
-    key = "ad_package_name#" + ad_info.app_id();
+    key = "package_name#ad_package_name#" + context.package_name() +
+        "#" + ad_info.app_id();
     ite_ad = ad_counter.store_ad_counter().find(key);
     if (ite_ad != ad_counter.store_ad_counter().end()) {
       feature_ad_counter.mutable_ad_package_name()->CopyFrom(ite_ad->second);
     }
 
-    key = "ad_package_category#" + ad_info.category();
+    key = "package_name#ad_package_category#" + context.package_name() +
+        "#" + ad_info.category();
     ite_ad = ad_counter.store_ad_counter().find(key);
     if (ite_ad != ad_counter.store_ad_counter().end()) {
       feature_ad_counter.mutable_ad_package_category()->
@@ -195,7 +197,8 @@ bool DataToFeatureInput(
             mutable_user_id_pos_id_c_id()->CopyFrom(ite->second);
       }
 
-      key = "c_id#" + ad_info.creative_id();
+      key = "package_name#c_id#" + context.package_name() +
+          "#" + ad_info.creative_id();
       auto ite_ad = ad_counter.store_ad_counter().find(key);
       if (ite_ad != ad_counter.store_ad_counter().end()) {
         one_feature.mutable_ad_data()->mutable_ad_counter()->
