@@ -218,7 +218,7 @@ double GetExploreScore(
     score = 0.01;
   }
 
-  double imp(std::max(cid_imp, 1000));
+  double imp(std::max(cid_imp, 1000.0));
   double alpha = score * imp;
   double beta = imp - alpha;
   BetaDistribution dist(alpha, beta);
