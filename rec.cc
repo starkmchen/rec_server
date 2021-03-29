@@ -263,10 +263,12 @@ bool AdRec::FillScore(
     }
     modelx::Model_result result;
     double score = ctr_vec[i] * cvr_vec[i];
+    /*
     if (is_explore_flow) {
       score = GetExploreScore(
           ctr_vec[i], cvr_vec[i], fs[i], random_gen);
     }
+    */
     double ecpm = std::max(floor_price,
                            score * 1000.0 * creatives_list[i].bid_price());
     const auto& cid = creatives.creative()[0].creative_id();
@@ -537,9 +539,9 @@ std::optional<std::vector<double>> AdRec::GetCtr(
 std::optional<std::vector<double>> AdRec::GetCvr(
     const std::vector<Feature>& fs) {
   auto model_exp_config_ite =
-      request_->exp_params().exp_params().find("stats_ctr");
+      request_->exp_params().exp_params().find("model_cvr");
   if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
-      model_exp_config_ite->second == 1) {
+      model_exp_config_ite->second == 0) {
     return GetStatsCvr(fs);
   }
   return GetModelScore("dnn_model_cvr_t1", "predictions", fs);
@@ -642,6 +644,12 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
     NewAdBoost(fs, ads, size, rec_ad_map);
   }
   ads.resize(size);
+
+  for (uint32_t i = 0; i < ads.size(); ++i) {
+    if (ads[i].ecpm() < 0.2) {
+      ads[i].set_ecpm(0.2);
+    }
+  }
 
   SendMetisLog(ads, req_ads, rec_ad_map);
   return true;
