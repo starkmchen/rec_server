@@ -190,7 +190,7 @@ void DelExcessCapAd(std::vector<Feature> &fs) {
     }
     new_fs.push_back(feature);
   }
-  fs.swap(fs);
+  fs.swap(new_fs);
 }
 
 double GetExploreScore(
@@ -237,11 +237,9 @@ bool AdRec::FillScore(
     metis::ReqAds& req_ads,
     std::map<std::string, metis::RecAdInfo>& rec_ads
     ) {
-  const auto& creatives_list = ad_request.creatives();
-  if (ctr_vec.size() != creatives_list.size()) {
+  if (ctr_vec.size() != fs.size()) {
     common::Stats::get()->Incr(creativesSizeError);
-    LOG_ERROR("creatives size invalid: " << ctr_vec.size() <<
-      " " << creatives_list.size());
+    LOG_ERROR("creatives size invalid: " << ctr_vec.size() << " " << fs.size());
     return false;
   }
   if (cvr_vec.size() != fs.size()) {
@@ -255,12 +253,6 @@ bool AdRec::FillScore(
       std::chrono::system_clock::now().time_since_epoch().count());
   for (int i = 0; i < ctr_vec.size(); ++i) {
     const auto& ad_info = fs[i].ad_data().ad_info();
-    const auto& creatives = creatives_list[i];
-    if (creatives.creative().empty()) {
-      common::Stats::get()->Incr(creativesEmptyError);
-      LOG_ERROR("creatives is empty" << ad_info.ad_id());
-      continue;
-    }
     modelx::Model_result result;
     double score = ctr_vec[i] * cvr_vec[i];
     /*
@@ -269,10 +261,8 @@ bool AdRec::FillScore(
           ctr_vec[i], cvr_vec[i], fs[i], random_gen);
     }
     */
-    double ecpm = std::max(floor_price,
-                           score * 1000.0 * creatives_list[i].bid_price());
-    const auto& cid = creatives.creative()[0].creative_id();
-    result.set_creative_id(cid);
+    double ecpm = std::max(floor_price, score * 1000.0 * ad_info.bid_price());
+    result.set_creative_id(ad_info.creative_id());
     result.set_camp_id(ad_info.ad_id());
     result.set_model_spec(score);
     result.set_ecpm(ecpm);
@@ -289,11 +279,11 @@ bool AdRec::FillScore(
       req_ad->set_nation(ad_request.nation());
       req_ad->set_package_name(ad_request.contexts().package_name());
       req_ad->set_floor_price(floor_price);
-      req_ad->set_creative_id(cid);
+      req_ad->set_creative_id(ad_info.creative_id());
       req_ad->set_camp_id(ad_info.ad_id());
       req_ad->set_app_id(ad_info.app_id());
       req_ad->set_req_time(fs[i].context().req_time());
-      req_ad->set_bid_price(creatives.bid_price());
+      req_ad->set_bid_price(ad_info.bid_price());
       req_ad->set_pctr(ctr_vec[i]);
       req_ad->set_pcvr(cvr_vec[i]);
       req_ad->set_explore_flow(is_explore_flow);
@@ -307,11 +297,11 @@ bool AdRec::FillScore(
       rec_ad->set_nation(ad_request.nation());
       rec_ad->set_package_name(ad_request.contexts().package_name());
       rec_ad->set_floor_price(floor_price);
-      rec_ad->set_creative_id(cid);
+      rec_ad->set_creative_id(ad_info.creative_id());
       rec_ad->set_camp_id(ad_info.ad_id());
       rec_ad->set_app_id(ad_info.app_id());
       rec_ad->set_req_time(fs[i].context().req_time());
-      rec_ad->set_bid_price(creatives.bid_price());
+      rec_ad->set_bid_price(ad_info.bid_price());
       rec_ad->set_pctr(ctr_vec[i]);
       rec_ad->set_pcvr(cvr_vec[i]);
       rec_ad->mutable_feature()->CopyFrom(fs[i]);
