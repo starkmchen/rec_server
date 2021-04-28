@@ -1,18 +1,20 @@
 #include <algorithm>
 #include <chrono>
+#include <future>
 #include <tuple>
 
-#include "rec/beta_distribution.h"
 #include "ads_feature.h"
 #include "feature/feature.h"
-#include "prediction_service.pb.h"  // tf-serving
 #include "metis/metis.h"
 #include "metis_kafka.pb.h"
 #include "metrics/metrics.h"
+#include "prediction_service.pb.h"  // tf-serving
+#include "rec/beta_distribution.h"
 #include "rec/rec.h"
 #include "sharestore/sharestore.h"
 #include "tf/tf.h"
 #include "tf/tf_model.h"
+#include "util/likely.h"
 #include "util/log.h"
 #include "util/ThreadPool.h"
 
@@ -150,8 +152,9 @@ void FillFloatFeature(
 }
 
 
-bool FillTfFeatures(const std::map<std::string, DnnFieldItem>& model_dict,
-    const std::vector<FeatureResultPtr>& features,
+bool FillTfFeatureTask(const std::map<std::string, DnnFieldItem>& model_dict,
+    const std::vector<std::string>& feature_names, size_t begin, size_t end,
+    const std::vector<FeatureResultPtr>& creatives,
     google::protobuf::Map<std::string, tensorflow::TensorProto>& inputs) {
   using Func = std::add_pointer_t<void (
     const DnnFieldItem& feature_info,
@@ -163,24 +166,84 @@ bool FillTfFeatures(const std::map<std::string, DnnFieldItem>& model_dict,
     {"int", FillIntFeature},
     {"sequence", FillSequenceFeature},
     };
-  common::Timer timer(tfFeatureMs);
-  for (const auto& [feature_name, feature_info] : model_dict) {
-    auto it = functions.find(feature_info.field_type);
-    if (it == functions.cend()) {
+  for (; begin < end; ++begin) {
+    const auto& feature_name = feature_names[begin];
+    auto it_feature_info = model_dict.find(feature_name);
+    if (UNLIKELY(it_feature_info == model_dict.cend())) {
+      LOG_ERROR("invalid feature index: name=" << feature_name << " index="
+        << begin);
+      return false;
+    }
+    const auto& feature_info = it_feature_info->second;
+    auto it_fn = functions.find(feature_info.field_type);
+    if (UNLIKELY(it_fn == functions.cend())) {
       common::Stats::get()->Incr(tfFeatureTypeError);
       LOG_ERROR("invalid feature type: name=" << feature_name << " type="
         << feature_info.field_type);
       return false;
     }
-    it->second(feature_info, features, inputs[feature_name]);
+    const auto it_proto = inputs.find(feature_name);
+    if (UNLIKELY(it_proto == inputs.end())) {
+      LOG_ERROR("invalid feature name of tf inputs: name=" << feature_name);
+      return false;
+    }
+    it_fn->second(feature_info, creatives, it_proto->second);
+  }
+  return true;
+}
+
+
+bool FillTfFeatures(const std::map<std::string, DnnFieldItem>& model_dict,
+    const std::vector<FeatureResultPtr>& features,
+    google::protobuf::Map<std::string, tensorflow::TensorProto>& inputs) {
+  common::Timer timer(tfFeatureMs);
+  // 收集特征名字，预先创建TensorProto
+  std::vector<std::string> feature_names;
+  feature_names.reserve(model_dict.size());
+  for (const auto& p : model_dict) {
+    inputs.insert({p.first, tensorflow::TensorProto()});
+    feature_names.emplace_back(p.first);
+  }
+  // 创建线程任务
+  constexpr size_t batch_count = 2;
+  auto batch_size = feature_names.size() / batch_count + 1;
+  std::vector<std::future<bool>> results;
+  for (size_t i = 0; i < batch_count; ++i) {
+    auto begin = batch_size * i;
+    auto end = std::min(feature_names.size(), batch_size * (i + 1));
+    results.emplace_back(
+      thread_pool.enqueue(
+        [&model_dict, &feature_names, begin, end, &features, &inputs] () {
+          return FillTfFeatureTask(model_dict, feature_names, begin, end,
+            features, inputs);
+        }
+      )
+    );
+  }
+  // 判断处理结果
+  for (auto& result : results) {
+    if (UNLIKELY(!result.get())) {
+      return false;
+    }
   }
   return true;
 }
 
 /* ========================================================================== */
 
+// 从fs中删除预算超额的广告素材
 void DelExcessCapAd(std::vector<Feature> &fs) {
   std::vector<Feature> new_fs;
+  new_fs.reserve(fs.size());
+
+  auto model_exp_config_ite =
+      request_->exp_params().exp_params().find("freq_ctrl");
+  bool freq_ctrl(false);
+  if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
+      model_exp_config_ite->second == 1) {
+    freq_ctrl = true;
+  }
+
   for (const auto &feature : fs) {
     auto day_ainst = feature.ad_data().ad_counter().
         ad_id().count_features_bj_1d().attr_install();
@@ -188,10 +251,15 @@ void DelExcessCapAd(std::vector<Feature> &fs) {
     if (cap > 0 && day_ainst > cap) {
       continue;
     }
-    new_fs.push_back(feature);
+    if (freq_ctrl && feature.user_ad_feature().user_ad_count().
+        user_id_ad_package_name().count_features_7d().imp() > 10) {
+      continue;
+    }
+    new_fs.emplace_back(std::move(feature));
   }
   fs.swap(new_fs);
 }
+
 
 double GetExploreScore(
     double ctr, double cvr, const Feature &feature,
@@ -228,7 +296,6 @@ double GetExploreScore(
 
 
 bool AdRec::FillScore(
-    const std::vector<Feature>& fs,
     const std::vector<double> &ctr_vec,
     const std::vector<double> &cvr_vec,
     std::vector<modelx::Model_result>& ads,
@@ -237,6 +304,7 @@ bool AdRec::FillScore(
     metis::ReqAds& req_ads,
     std::map<std::string, metis::RecAdInfo>& rec_ads
     ) {
+  const auto& fs = raw_features_;
   if (ctr_vec.size() != fs.size()) {
     common::Stats::get()->Incr(creativesSizeError);
     LOG_ERROR("creatives size invalid: " << ctr_vec.size() << " " << fs.size());
@@ -290,7 +358,7 @@ bool AdRec::FillScore(
     }
     // rec_ads
     {
-      auto rec_ad = &rec_ads[cid];
+      auto rec_ad = &rec_ads[ad_info.creative_id()];
       rec_ad->set_request_id(ad_request.request_id());
       rec_ad->set_user_id(ad_request.user_id());
       rec_ad->set_pos_id(ad_request.pos_id());
@@ -343,6 +411,7 @@ GetStatsCtr(const std::vector<Feature> &features) {
   }
   return std::make_optional(std::move(ctr_vec));
 }
+
 
 std::optional<std::vector<double>>
 GetStatsCvr(const std::vector<Feature> &features) {
@@ -448,13 +517,35 @@ void NewAdBoost(
 }
 
 
+void FeatureExtractTask(const std::vector<Feature> &fs,
+    std::vector<FeatureResultPtr>& features, size_t begin, size_t end) {
+  ModelFeature mf;
+  for (; begin < end; ++begin) {
+    features[begin] = mf.extract_feature(fs[begin]);
+  }
+}
+
+
 std::vector<FeatureResultPtr> FeatureExtract(const std::vector<Feature> &fs) {
   common::Timer timer(featureExtractMs);
-  std::vector<FeatureResultPtr> features;
-  features.reserve(fs.size());
-  ModelFeature mf;
-  for (const auto& ad_feature : fs) {
-    features.push_back(mf.extract_feature(ad_feature));
+  std::vector<FeatureResultPtr> features(fs.size());
+  constexpr size_t batch_count = 2;
+  auto batch_size = fs.size() / batch_count + 1;
+  std::vector<std::future<void>> results;
+  for (size_t i = 0; i < batch_count; ++i) {
+    auto begin = batch_size * i;
+    auto end = std::min(fs.size(), batch_size * (i + 1));
+    results.emplace_back(
+      thread_pool.enqueue(
+        [&fs, &features, begin, end] () {
+          FeatureExtractTask(fs, features, begin, end);
+        }
+      )
+    );
+  }
+  // 等待所有任务执行完毕
+  for (auto& result : results) {
+    result.get();
   }
   return features;
 }
@@ -463,8 +554,7 @@ std::vector<FeatureResultPtr> FeatureExtract(const std::vector<Feature> &fs) {
 std::optional<std::vector<double>>
 AdRec::GetModelScore(
     const std::string &model_name,
-    const std::string &tf_output,
-    const std::vector<Feature> &fs) {
+    const std::string &tf_output) {
   auto model = GetTfModel(model_name);
   if (model == nullptr) {
     common::Stats::get()->Incr(tfModelNameError);
@@ -474,7 +564,7 @@ AdRec::GetModelScore(
   // tf request
   tensorflow::serving::PredictRequest request;
   request.mutable_model_spec()->set_name(model_name);
-  if (!FillTfFeatures(model->dnn_dict, FeatureExtract(fs),
+  if (!FillTfFeatures(model->dnn_dict, model_features_,
       *request.mutable_inputs())) {
     return std::nullopt;
   }
@@ -497,16 +587,16 @@ AdRec::GetModelScore(
     LOG_ERROR("tf response data_type is not float: " << tensor_proto.dtype());
     return std::nullopt;
   }
-  if (tensor_proto.float_val_size() != fs.size()) {
+  if (tensor_proto.float_val_size() != model_features_.size()) {
     common::Stats::get()->Incr(tfTensorSizeError);
     LOG_ERROR("tf response size invalid: " << tensor_proto.float_val_size() <<
-      " " << fs.size());
+      " " << model_features_.size());
     return std::nullopt;
   }
 
   // set score
   std::vector<double> score_vec;
-  score_vec.reserve(fs.size());
+  score_vec.reserve(model_features_.size());
   for (int i = 0; i < tensor_proto.float_val_size(); ++i) {
     score_vec.push_back(tensor_proto.float_val(i));
   }
@@ -515,26 +605,24 @@ AdRec::GetModelScore(
 
 /* ========================================================================== */
 
-std::optional<std::vector<double>> AdRec::GetCtr(
-    const std::vector<Feature>& fs) {
+std::optional<std::vector<double>> AdRec::GetCtr() {
   auto model_exp_config_ite =
       request_->exp_params().exp_params().find("stats_ctr");
   if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
       model_exp_config_ite->second == 1) {
-    return GetStatsCtr(fs);
+    return GetStatsCtr(raw_features_);
   }
-  return GetModelScore("dnn_model_t1", "predictions", fs);
+  return GetModelScore("dnn_model_t1", "predictions");
 }
 
-std::optional<std::vector<double>> AdRec::GetCvr(
-    const std::vector<Feature>& fs) {
+std::optional<std::vector<double>> AdRec::GetCvr() {
   auto model_exp_config_ite =
-      request_->exp_params().exp_params().find("model_cvr");
+      request_->exp_params().exp_params().find("stats_cvr");
   if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
-      model_exp_config_ite->second == 0) {
-    return GetStatsCvr(fs);
+      model_exp_config_ite->second == 1) {
+    return GetStatsCvr(raw_features_);
   }
-  return GetModelScore("dnn_model_cvr_t1", "predictions", fs);
+  return GetModelScore("dnn_model_cvr_t1", "predictions");
 }
 
 /* ========================================================================== */
@@ -580,36 +668,28 @@ inline bool cmp (const modelx::Model_result& a, const modelx::Model_result& b) {
 }
 
 
-std::pair<AdRec::FutureCtr, AdRec::FutureCvr>
-AdRec::GetCtrCvr(const std::vector<Feature>& fs) {
-  auto ctr_fut = thread_pool.enqueue(
-    [this, &fs] () {
-      return GetCtr(fs);
-    }
-  );
-  auto cvr_fut = thread_pool.enqueue(
-    [this, &fs] () {
-      return GetCvr(fs);
-    }
-  );
+std::pair<AdRec::FutureCtr, AdRec::FutureCvr> AdRec::GetCtrCvr() {
+  auto ctr_fut = thread_pool.enqueue([this] () { return GetCtr(); });
+  auto cvr_fut = thread_pool.enqueue([this] () { return GetCvr(); });
   return std::make_pair(std::move(ctr_fut), std::move(cvr_fut));
 }
 
 
 bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
+  common::Stats::get()->AddMetric(ad::modelTaskCount, thread_pool.task_count());
   InitShareStoreData();
   // convert raw data to feature_input
-  std::vector<Feature> fs;  // feature_input. 每个元素对应一个creative
   if (!DataToFeatureInput(*request_, store_user_counter_, store_user_profile_,
-        *GetStoreAdInfo(), *GetStoreAdCounter(), fs)) {
+        *GetStoreAdInfo(), *GetStoreAdCounter(), raw_features_)) {
     common::Stats::get()->Incr(data2FeatureInputError);
     LOG_ERROR("convert raw data to feature_input failed");
     return false;
   }
 
-  DelExcessCapAd(fs);
+  DelExcessCapAd(raw_features_);
+  model_features_ = FeatureExtract(raw_features_);
 
-  auto ctr_cvr = GetCtrCvr(fs);
+  auto ctr_cvr = GetCtrCvr();
   auto ctr_opt = ctr_cvr.first.get();
   auto cvr_opt = ctr_cvr.second.get();
   if (!ctr_opt.has_value() || !cvr_opt.has_value()) {
@@ -621,25 +701,29 @@ bool AdRec::Recommend(std::vector<modelx::Model_result>& ads) {
 
   metis::ReqAds req_ads;  // metis logging for all ads in request
   std::map<std::string, metis::RecAdInfo> rec_ad_map;
-  if (!FillScore(fs, ctr_opt.value(), cvr_opt.value(), ads, request_->request(),
+  if (!FillScore(ctr_opt.value(), cvr_opt.value(), ads, request_->request(),
       is_explore_flow, req_ads, rec_ad_map)) {
     return false;
   }
 
   auto size = std::min(ads.size(),
     static_cast<size_t>(request_->request().contexts().ad_count()));
-  std::partial_sort(ads.begin(), ads.begin() + size, ads.end(), cmp);
 
-  if (is_new_ad_sup) {
-    NewAdBoost(fs, ads, size, rec_ad_map);
-  }
-  ads.resize(size);
-
-  for (uint32_t i = 0; i < ads.size(); ++i) {
-    if (ads[i].ecpm() < 0.2) {
-      ads[i].set_ecpm(0.2);
+  auto model_exp_config_ite =
+      request_->exp_params().exp_params().find("random");
+  if (model_exp_config_ite != request_->exp_params().exp_params().end() &&
+      model_exp_config_ite->second == 1) {
+    if (ads.size() > 0) {
+      std::random_shuffle(ads.begin(), ads.end());
+    }
+  } else {
+    std::partial_sort(ads.begin(), ads.begin() + size, ads.end(), cmp);
+    if (is_new_ad_sup) {
+      NewAdBoost(raw_features_, ads, size, rec_ad_map);
     }
   }
+
+  ads.resize(size);
 
   SendMetisLog(ads, req_ads, rec_ad_map);
   return true;
