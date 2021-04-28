@@ -232,7 +232,7 @@ bool FillTfFeatures(const std::map<std::string, DnnFieldItem>& model_dict,
 /* ========================================================================== */
 
 // 从fs中删除预算超额的广告素材
-void DelExcessCapAd(std::vector<Feature> &fs) {
+void AdRec::DelExcessCapAd(std::vector<Feature> &fs) {
   std::vector<Feature> new_fs;
   new_fs.reserve(fs.size());
 
